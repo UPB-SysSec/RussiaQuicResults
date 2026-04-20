@@ -1,0 +1,14 @@
+payload,MOW uncensored,SPE uncensored,NVS uncensored
+benign.bin,10,10,10
+payload_1.bin,0,0,0
+payload_10.bin,10,10,10
+payload_2.bin,0,0,0
+payload_3.bin,10,10,10
+payload_4.bin,10,10,10
+payload_5_dcid.bin,10,10,10
+payload_5_scid.bin,10,10,10
+payload_6.bin,10,10,10
+payload_7.bin,10,10,10
+payload_8.bin,0,0,0
+payload_9.bin,10,10,10
+remove_sni.bin,10,10,10
