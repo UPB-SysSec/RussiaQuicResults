@@ -1,0 +1,1042 @@
+Ограничение HTTP/3 (QUIC)
+serfreeman1337 1 4 March 2022 07:41
+
+Не устанавливается соединение по QUIC для зарубежных сайтов. Не приходит ответ от сервера на
+Initial пакет.
+Проверял на сайтах google (в том числе youtube), cloudflare-quic.com и quic.nginx.org.
+При этом vk.com продолжает работать по HTTP/3.
+Заметил на операторах Yota, Мегафон и проводном МТС.
+
+Hatomen 2 4 March 2022 08:03
+
+Быстрая проверка показывает, что:
+Провайдер RNet (СПб):
+
+Мобильный Билайн:
+
+При этом аналогичная картинка на обоих провайдерах с включенным впн:
+
+bolvan 3 4 March 2022 13:49
+
+Действительно, ответа на QUIC initial нет. Проверено на cloudflare-quic.com и ipv4.google.com
+Но на vk.com QUIC не заблокирован
+Лечится вот так :
+iptables -t mangle -I POSTROUTING -p udp --dport 443 -m mark ! --mark 0x40000000/0
+nfqws --qnum=205 ---dpi-desync=fake --dpi-desync-any-protocol --dpi-desync-cutoff=
+
+Заодно и проверил работу nfqws на десинхронизацию UDP. Вполне успешно справилось
+Как и ожидалось, фильтр не способен вычленить из QUIC имя хоста, поскольку ему пришлось бы
+применять сложный алгоритм расшифровки. Потому QUIC банится. Вероятно по white list
+Так же ожидаемо DPI отстает от потока UDP , если 1-й пакет ему не показался похожим на QUIC.
+Либо ищется только QUIC initial. Не проверял
+
+UPDATE. Как оказалось, движок QUIC от chromium ловит не только UDP, но и ICMP ttl expired in
+transit, связанные со своими UDPшками. Они приходят от фейк-пакетов с низким TTL. Как только
+броузер славливает такой ICMP, сеанс считает порванным, дальше ничего не проходит. Mozilla этим
+НЕ страдает.
+Лечение : либо резать ttl expired in transit (нехорошо, поломаете трейсилки), либо отказаться от ttl
+fooling и заменить на любой другой, который сработает. Например, badsum.
+А можно вообще убрать fooling. В этом случае фейки будут доходить до сервера, но поскольку там
+трэш, они будут отбрасываться процессом веб сервера.
+Но если вы вдруг используете badsum и что-то на пути будет дропать пакеты с badsum (роутеры
+mediatek, заводские прошивки с linux), то обход не сработает
+Проще и надежнее убрать fooling
+
+Блокировка google в ЛНР
+
+yuichi001 4 4 March 2022 14:19
+
+есть аналогичные команды под windows и goodbye dpi?
+
+bolvan 5 4 March 2022 14:20
+
+Насколько мне известно, goodbye пока не поддерживает udp
+
+ValdikSS 6 4 March 2022 16:59
+
+Подозреваю, что протокол отключили из-за проблем с блокировкой веб-сайтов? Поддерживает ли
+HTTP/3 подключение только по QUIC, без TCP-соединения вовсе? Насколько понимаю, ему в любом
+случае нужен TCP, а уведомление о поддержке QUIC передаётся в TLS ALPN или в HTTP Alt-Svc,
+или я что-то упустил?
+
+bolvan 7 4 March 2022 19:14
+
+Технически нет никаких проблем сначала пытаться установить quic handshake, и это сработало бы
+аналогично ESNI, обойдя все блокировки.
+Другое дело, что броузеры этого не делают. Они действительно сначала лезут по TLS, и только потом
+в результате процедуры апгрейда лезут по h3.
+Получается, вся защита основывается лишь на “инструментальной беспомощности”. Нет
+элементарной функции. Но это дело поправимое. Внести небольшую правку в код, добавить
+переменную в about:config
+Умелец выпустит модифицированный броузер, и дальше результат понятен
+
+serfreeman1337 8 5 March 2022 06:56
+
+bolvan:
+Другое дело, что броузеры этого не делают. Они действительно сначала лезут по TLS, и только
+потом в результате процедуры апгрейда лезут по h3.
+Обнаружил, что Firefox можно заставить лезть сразу по h3, задав alt-svc для нужных хостов через
+преф:
+network.http.http3.alt-svc-mapping-for-testing
+
+Установив его в:
+facebook.com;h3=:443,www.facebook.com;h3=:443,static.xx.fbcdn.net;h3=:443
+
+удалось открыть страницу facebook.com
+При обновлении без кеша (ctrl+f5 или shift+клик по иконке обновления) Firefox снова пытается
+открыть его через TLS, простое F5 перезагружает его через h3 без проблем.
+
+kelm 9 6 March 2022 11:39
+
+serfreeman1337:
+Обнаружил, что Firefox можно заставить лезть сразу по h3, задав alt-svc для нужных хостов
+через преф:
+Немедленное рукопожатие HTTP/3 (для одного хоста) также возможно в Chrome/Chromium, запустив
+браузер из командной строки:
+
+1. Введите следующую команду:
+Chromium: chromium --enable-quic --origin-to-force-quic-on=www.facebook.com:443
+Chrome: chrome --enable-quic --origin-to-force-quic-on=www.facebook.com:443
+2. Введите адрес веб-сайта в адресную строку (используйте точное доменное имя, указанное в
+команде).
+
+ValdikSS 10 9 March 2022 00:55
+
+Фильтр работает только для пакетов с UDP-нагрузкой больше 1001 байтов (включительно).
+Фильтр ищет “00 00 00 01” (hex, QUIC version) в UDP-нагрузке, начиная со второго байта.
+Применяется только к UDP-пакетам на порт назначения 443. Исходящий порт значения не имеет
+(может быть также 443, фильтр не применится).
+Псевдо-yara-правило фильтра:
+rule QUIC_block_Russia_TSPU_04_mar_2022
+{
+condition:
+filesize > 1000 and dport == 443 and int32be(1) == 0x00000001
+}
+
+Минимальный пакет, на который срабатывает фильтр:
+quic_tspu_filtered.bin (1001 Bytes)
+nping --udp -p 443 -c 1 --data "$(xxd -ps -c 999999 quic_tspu_filtered.bin)"
+
+bolvan 11 9 March 2022 08:00
+
+Подтверждаю. Добавлю к этому, что к входящим пакетам фильтрация не применяется и используется
+stateful фильтр. Если первый пакет между src_ip:src_port dst_ip:dst_port не распознан как
+QUIC, остальные не проверяют. Потому и работает desync=fake в nfqws
+desync=ipfrag2 тоже работает , если тестировать с помощью nping со своей VPSкой или девайсом на
+другом российском провайдере, но на большинстве сайтов не работает, потому что сеть крайне
+враждебна к ip фрагментам. но все же обмануть ТСПУ этим можно, если речь пойдет о подключении
+к своему сервису (не обязательно веб, может быть wireguard). Естественно, ipfrag убивается первым
+же NAT на пути. Если от провайдера серый ип и ТСПУ находится после NAT или из-за своего
+роутера - неприменимо
+
+Проверил еще хождение между 2 российскими провайдерами. Тоже заблокировано
+Значит, гипотеза про white list на ВК подтверждается
+
+serfreeman1337 12 14 March 2022 15:10
+
+С 12 часов на Yota и Megafon наблюдаю проблемы с доступом на домены google com / google ru.
+Соединение устанавливается, но после получения некоторого объема данных пакеты перестаю
+ходить.
+Странно, что такое только с доменами .google., с ютубом все ок.
+google_quic_yota.pcapng (79.8 KB)
+IP адрес 142.250.186.196 для google com прописан через /etc/hosts
+На мобильном билайне с nfqws всё работает без проблем, как и на проводном Net By Net.
+UPD:
+Проблема с Firefox, с Chromium все загружается.
+ValdikSS:
+Фильтр ищет “00 00 00 01” (hex, QUIC version) в UDP-нагрузке, начиная со второго байта.
+В firefox можно отключить quic version 1, установив network.http.http3.support_version1 в
+false , тогда в QUIC Version будет светиться “FF 00 00 1D” (draft-29) и фильтр пропустит его. В altsvc преф нужно писать h3-29=:443 в этом случае.
+
+serfreeman1337 13 19 March 2022 09:55
+
+Обход через смену версии на draft-29 больше не работает, по крайней мере с instagram и facebook:
+Следующий пакет не пропускает фильтр:
+instagram_quic_initial.bin (1.3 KB)
+Хотя такой же пакет для домена гугла доходит до сервера.
+C nfqws все также работает.
+
+ValdikSS 14 19 March 2022 21:32
+
+Ваш пакет доходит до facebook.com (157.240.201.35) , на провайдере с ТСПУ.
+$ nping --udp -p 443 -c 1 --data "$(xxd -ps -c 999999 instagram_quic_inital.bin)"
+Starting Nping 0.7.91 ( https://nmap.org/nping ) at 2022-03-20 00:31 MSK
+SENT (0.0022s) UDP packet with 1357 bytes to 157.240.201.35:443
+RCVD (0.0394s) UDP packet with 1232 bytes from 157.240.201.35:443
+Max rtt: 37.137ms | Min rtt: 37.137ms | Avg rtt: 37.137ms
+UDP packets sent: 1 | Rcvd: 1 | Lost: 0 (0.00%)
+Nping done: 1 IP address pinged in 0.04 seconds
+
+Как минимум у части провайдеров заблокированы часть адресов Instagram. Попробуйте порезолвить
+домены через разные публичные резолверы и попробовать разные IP-адреса.
+
+serfreeman1337 15 20 March 2022 08:29
+
+Я проверял с DigitalOcean AMS. Оператор Yota.
+Тесты с 157.240.201.35:
+Initial с server_name www.google.com :
+$ nping --udp -p 443 -c 1 --data "$(xxd -ps -c 999999 google_quic_initial.bin)" 15
+Starting Nping 0.7.92 ( https://nmap.org/nping ) at 2022-03-20 11:18 MSK
+SENT (0.0016s) UDP packet with 1357 bytes to 157.240.201.35:443
+RCVD (0.2062s) UDP packet with 1232 bytes from 157.240.201.35:443
+Max rtt: 204.642ms | Min rtt: 204.642ms | Avg rtt: 204.642ms
+UDP packets sent: 1 | Rcvd: 1 | Lost: 0 (0.00%)
+Nping done: 1 IP address pinged in 0.21 seconds
+
+Initial с server_name www.instagram.com :
+$ nping --udp -p 443 -c 1 --data "$(xxd -ps -c 999999 instagram_quic_inital.bin)"
+Starting Nping 0.7.92 ( https://nmap.org/nping ) at 2022-03-20 11:18 MSK
+SENT (0.0015s) UDP packet with 1357 bytes to 157.240.201.35:443
+Max rtt: N/A | Min rtt: N/A | Avg rtt: N/A
+
+UDP packets sent: 1 | Rcvd: 0 | Lost: 1 (100.00%)
+Nping done: 1 IP address pinged in 1.00 seconds
+
+Тоже самое происходит и с www.facebook.com . При использовании nfqws оба server_name доходят.
+
+ValdikSS 16 20 March 2022 09:33
+
+Через Tele2 instagram отвечает почти всегда, но не каждый раз. На личный сервер этот пакет доходит
+всегда.
+На Yota, действительно, есть фильтр, и на первый взгляд, он декодирует QUIC-пакет и выявляет имя
+домена.
+
+bolvan 17 21 March 2022 09:19
+
+На моем провайдере с ТСПУ начались непонятные и хаотичные отрубы QUIC сессий, пробитых с
+помощью nfqws --dpi-desync=fake. Пейлоад пробовал разный. Разницы никакой.
+Тест : с firefox с вычищенным кэшем заходим на https://ipv4.google.com
+через раз получается как на картинке
+По паре ip:port перестают ходить пакеты, как если бы DPI занес UDP поток в черный список. Точно
+так же, как если первым пакетом пошел бы QUIC initial. Но здесь происходит отруб внезапно в
+середине сеанса. Всовывание фейков перед каждым пакетом не помогает.
+Пробовал завертывать UDP через свой сервер. Тоже самое. Если пропустить через VPN - проблема
+уходит
+Пробовал взять первые 2 пакета от клиента и от сервера (initial) и долбиться ими nping-ом по одной
+паре ip:port с сервера и клиента после начального пробития фейком. Не отрубает.
+nping по блокированной паре ip:port с ограниченным TTL показывает, что блок идет на 5-хопе. Там
+стоит как раз ТСПУ и блокировщик сайтов
+Эвристика - статистика какая-то ?
+
+Supp 18 23 March 2022 15:54
+
+У домру недавно наблюдались блокировки QUIC на youtube, facebook, в отличие от VK. Сейчас
+проверил, пока QUIC заработал на них. Тестят наверно…
+
+bolvan 19 23 March 2022 16:11
+
+Крайний раз, когда тестил домру около месяца назад, у них наблюдался лоад балансинг.
+Часть трафика уходит через ТСПУ, а часть нет. Где нет - там простой пассивный DPI.
+Потому может то работать QUIC, то не работать. По какому критерию балансируется трафик я не
+изучал, возможно по IP. Учитывая прыгающий характер ip от крупных сервисов, может так и
+получиться, что когда-то запросы идут через ТСПУ, а когда-то нет
+
+Bronner 20 26 March 2022 02:47
+
+Почему после включения nfqws может совсем переставать работать http3? Если отключить nfqws, то
+через curl работает http3, но в хроме только http2. Проверял на quic.nginx.org и cloudflare-quic.com,
+ютубе и др. Если включить VPN, то в хроме начинает полноценно работать http3. В firefox работает
+http3 и без vpn, но частично, только cloudflare-quic.com, а на quic.nginx.org не работает, на других
+сайтах чаще тоже работает. В Safari совсем ситуация странная, буквально пару дней назад http3
+работал везде даже лучше, чем в firefox, а сегодня даже через vpn не работает.
+nfqws --dpi-desync-fwmark=0x40000000 --qnum=210 --dpi-desync=fake --debug
+
+curl -4ILv --max-time 5 --http3 https://vk.com
+*
+Trying 87.240.190.72:443...
+* Connect socket 5 over QUIC to 87.240.190.72:443
+* Sent QUIC client Initial, ALPN: h3-29,h3-28,h3-27
+* After 2498ms connect time, move on!
+* connect to 87.240.190.72 port 443 failed: Connection timed out
+*
+Trying 87.240.190.67:443...
+* Connect socket 6 over QUIC to 87.240.190.67:443
+* Sent QUIC client Initial, ALPN: h3-29,h3-28,h3-27
+* After 1249ms connect time, move on!
+* connect to 87.240.190.67 port 443 failed: Connection timed out
+*
+Trying 87.240.190.78:443...
+* Connect socket 5 over QUIC to 87.240.190.78:443
+* Sent QUIC client Initial, ALPN: h3-29,h3-28,h3-27
+* After 624ms connect time, move on!
+* connect to 87.240.190.78 port 443 failed: Connection timed out
+*
+Trying 87.240.137.158:443...
+* Connect socket 6 over QUIC to 87.240.137.158:443
+* Sent QUIC client Initial, ALPN: h3-29,h3-28,h3-27
+* After 313ms connect time, move on!
+* connect to 87.240.137.158 port 443 failed: Connection timed out
+*
+Trying 87.240.139.194:443...
+* Connect socket 5 over QUIC to 87.240.139.194:443
+* Sent QUIC client Initial, ALPN: h3-29,h3-28,h3-27
+* After 156ms connect time, move on!
+* connect to 87.240.139.194 port 443 failed: Connection timed out
+*
+Trying 93.186.225.208:443...
+
+IP4: 192.168.1.113 => 87.240.137.158 proto=udp sport=61894 dport=443
+UDP: CF FF 00 00 1D 10 2C 20 B7 21 87 58 81 F7 7C 35 DD 53 A2 C5 3E 53 14 B9 69 39
+packet contains QUIC initial
+hostname: vk.com
+dpi desync src=192.168.1.113:61894 dst=87.240.137.158:443
+sending fake request : 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+reinjecting original packet. len=1228 len_payload=1200
+packet: id=30 drop
+packet: id=31 len=1228
+IP4: 192.168.1.113 => 87.240.139.194 proto=udp sport=61598 dport=443
+UDP: C2 FF 00 00 1D 10 38 DB 6E CE F1 CB 56 79 07 F0 93 1A 44 1A F7 B7 14 D2 BD E2
+packet contains QUIC initial
+hostname: vk.com
+dpi desync src=192.168.1.113:61598 dst=87.240.139.194:443
+sending fake request : 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+reinjecting original packet. len=1228 len_payload=1200
+packet: id=31 drop
+packet: id=32 len=1228
+IP4: 192.168.1.113 => 93.186.225.208 proto=udp sport=60154 dport=443
+UDP: CF FF 00 00 1D 10 2D F6 2E 56 03 F9 77 77 84 84 EA E7 CE D4 48 AF 14 EF E5 4F
+packet contains QUIC initial
+hostname: vk.com
+dpi desync src=192.168.1.113:60154 dst=93.186.225.208:443
+
+sending fake request : 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+reinjecting original packet. len=1228 len_payload=1200
+packet: id=32 drop
+
+bolvan 21 26 March 2022 07:38
+
+Единственная проблема с атакой fake против QUIC, которую я нашел , это спорадическое
+застревание потока на середине, как описано выше. Видимо оно вызванно какими-то
+статистическими методами анализа на ТСПУ, срабатывающими через раз.
+Но если этого не случается, то поведение броузеров на провайдерах с ТСПУ + nfqws и провайдерах
+без ТСПУ и без nfqws выглядит идентичным
+Броузеры сейчас слишком умные. Их цель - не подключить вас по самому крутому и модному
+протоколу, а загрузить страницу как можно быстрее. Исходя из этих соображений они сами вольны
+выбирать какое подключение использовать и через какую версию ip.
+У меня и на хромиуме, и на мозилле, quic.nginx.org проходит тест на QUIC, а cloudflare не проходит
+на обоих броузерах. Смотрим F12 и видим, что там первая часть запросов идет по http/2, вторая по
+http/3. Если убрать nfqws на провайдере с ТСПУ, то все запросы идут http/2
+Мне сообщали, что на некоторых провайдерах (yota), они стали дешифровывать QUIC на DPI. Я не в
+курсе подробностей, но дело вот в чем. Сейчас у них задача - полностью забанить сам протокол
+QUIC, кроме white list ip (вконтакт, слишком серьезный клиент).
+Если они научатся анализировать QUIC, они могут перестать банить сам протокол и убрать
+статистический анализ.
+
+bolvan 22 26 March 2022 09:35
+
+Собрал curl с quiche.
+2 теста на провайдере с ТСПУ.
+первый с nfqws, второй без
+curll -4Iv --http3 https://cloudflare-quic.com
+*
+Trying 172.67.9.235:443...
+* CAfile: /etc/ssl/certs/ca-certificates.crt
+* CApath: none
+* Connect socket 5 over QUIC to 172.67.9.235:443
+* Sent QUIC client Initial, ALPN: h3,h3-29,h3-28,h3-27
+
+* subjectAltName: host "cloudflare-quic.com" matched cert's "cloudflare-quic.co
+* Verified certificate just fine
+* Connected to cloudflare-quic.com () port 443 (#0)
+* h2h3 [:method: HEAD]
+* h2h3 [:path: /]
+* h2h3 [:scheme: https]
+* h2h3 [:authority: cloudflare-quic.com]
+* h2h3 [user-agent: curl/7.83.0-DEV]
+* h2h3 [accept: */*]
+* Using HTTP/3 Stream ID: 0 (easy handle 0x7fffd6627210)
+> HEAD / HTTP/3
+> Host: cloudflare-quic.com
+> user-agent: curl/7.83.0-DEV
+> accept: */*
+>
+< HTTP/3 200
+HTTP/3 200
+< date: Sat, 26 Mar 2022 09:32:25 GMT
+date: Sat, 26 Mar 2022 09:32:25 GMT
+< content-type: text/html
+content-type: text/html
+
+./curll -4Iv --max-time 5 --http3 https://cloudflare-quic.com
+*
+Trying 104.22.9.38:443...
+* CAfile: /etc/ssl/certs/ca-certificates.crt
+* CApath: none
+* Connect socket 5 over QUIC to 104.22.9.38:443
+* Sent QUIC client Initial, ALPN: h3,h3-29,h3-28,h3-27
+* After 2499ms connect time, move on!
+* connect to 104.22.9.38 port 443 failed: No error
+*
+Trying 104.22.8.38:443...
+* CAfile: /etc/ssl/certs/ca-certificates.crt
+* CApath: none
+* Connect socket 6 over QUIC to 104.22.8.38:443
+* Sent QUIC client Initial, ALPN: h3,h3-29,h3-28,h3-27
+* After 1249ms connect time, move on!
+* connect to 104.22.8.38 port 443 failed: No error
+*
+Trying 172.67.9.235:443...
+* CAfile: /etc/ssl/certs/ca-certificates.crt
+* CApath: none
+* Connect socket 5 over QUIC to 172.67.9.235:443
+* Sent QUIC client Initial, ALPN: h3,h3-29,h3-28,h3-27
+* After 624ms connect time, move on!
+* connect to 172.67.9.235 port 443 failed: No error
+* Failed to connect to cloudflare-quic.com port 443 after 4374 ms: Couldn't connec
+* Closing connection 0
+curl: (28) Failed to connect to cloudflare-quic.com port 443 after 4374 ms: Couldn
+
+вывод nfqws --debug
+
+packet: id=1 len=1228
+IP4: 192.168.4.2 => 172.67.9.235 proto=udp sport=51710 dport=443
+UDP: C6 00 00 00 01 10 71 F8 72 8E CC 61 C9 FD BB AB FA 94 E7 C1 A6 F1 14 90 55 4D
+packet contains QUIC initial
+hostname: cloudflare-quic.com
+dpi desync src=192.168.4.2:51710 dst=172.67.9.235:443
+sending fake request : 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+reinjecting original packet. len=1228 len_payload=1200
+packet: id=1 drop
+
+zinoid 23 26 March 2022 10:54
+
+bolvan:
+Собрал curl с quiche
+А можно еще собрать curl с openssl-quic от мелкомягких + nghttp3 + ngtcp2. Это будет
+альтернативная реализация, она используется в хромиуме. Только, это непросто
+
+bolvan 24 26 March 2022 13:52
+
+Bronner:
+Почему после включения nfqws может совсем переставать работать http3?
+Есть еще одна мысль. Недавно такая проблема вскрылась.
+Если в linux настроен сложный policy routing. Несколько аплинков, таблиц маршрутизации, ip rule ,
+основанные на source address, то пакеты, высланные через raw socket-ы могут уходить не с того
+интерфейса. Что от nfqws, что от nping. При этом обычные пакеты уходят нормально.
+Если это ваш случай, то надо убедиться, что пакеты идут действительно в нужный интерфейс и
+правильно заменяется source адрес , если используется NAT.
+Пока что самое эффективное лечение этой ситуации - вносить ip rule, базированные на fwmark,
+который выставляет nfqws
+
+Elevator 25 15 April 2022 11:29
+
+Skynet, СПб
+Блочится http3 до инстаграмма и фейсбука, но до гугла пропускает. Похоже стали расшифровывать
+заголовки.
+Причем по http2 пропускает тоже. К слову у skynet нет dpi, блок идет на транзитном провайдере,
+скорее всего МТС
+http3 до инсты
+./curl -4Iv -m 5 --http3 https://instagram.com
+*
+Trying 31.13.72.174:443...
+* CAfile: /etc/ssl/certs/ca-certificates.crt
+* CApath: none
+* Connect socket 5 over QUIC to 31.13.72.174:443
+* Sent QUIC client Initial, ALPN: h3,h3-29,h3-28,h3-27
+* After 2493ms connect time, move on!
+* connect to 31.13.72.174 port 443 failed: No error
+* Failed to connect to instagram.com port 443 after 2507 ms: Couldn't connect to s
+* Closing connection 0
+curl: (28) Failed to connect to instagram.com port 443 after 2507 ms: Couldn't con
+
+http3 до инсты через vpn
+./curl -4Iv -m 5 --http3 https://instagram.com
+*
+Trying 31.13.72.174:443...
+* CAfile: /etc/ssl/certs/ca-certificates.crt
+* CApath: none
+* Connect socket 5 over QUIC to 31.13.72.174:443
+* Sent QUIC client Initial, ALPN: h3,h3-29,h3-28,h3-27
+* subjectAltName: host "instagram.com" matched cert's "instagram.com"
+* Verified certificate just fine
+* Connected to instagram.com () port 443 (#0)
+* h2h3 [:method: HEAD]
+* h2h3 [:path: /]
+* h2h3 [:scheme: https]
+* h2h3 [:authority: instagram.com]
+* h2h3 [user-agent: curl/7.83.0-DEV]
+* h2h3 [accept: */*]
+* Using HTTP/3 Stream ID: 0 (easy handle 0x560fda7c27d0)
+> HEAD / HTTP/3
+> Host: instagram.com
+> user-agent: curl/7.83.0-DEV
+> accept: */*
+>
+
+< HTTP/3 405
+HTTP/3 405
+
+http2 до инсты
+./curl -4Iv -m 5 --http2 https://instagram.com
+*
+Trying 31.13.72.174:443...
+* Connected to instagram.com (31.13.72.174) port 443 (#0)
+* ALPN: offers http/1.1
+* CAfile: /etc/ssl/certs/ca-certificates.crt
+* CApath: none
+* TLSv1.2 (OUT), TLS handshake, Client hello (1):
+* TLSv1.2 (IN), TLS handshake, Server hello (2):
+* TLSv1.3 (OUT), TLS change cipher, Change cipher spec (1):
+* TLSv1.3 (IN), TLS handshake, Encrypted Extensions (8):
+* TLSv1.3 (IN), TLS handshake, Certificate (11):
+* TLSv1.3 (IN), TLS handshake, CERT verify (15):
+* TLSv1.3 (IN), TLS handshake, Finished (20):
+* TLSv1.3 (OUT), TLS handshake, Finished (20):
+* SSL connection using TLSv1.3 / TLS_AES_128_GCM_SHA256
+* ALPN: server accepted http/1.1
+
+http3 до гугла
+./curl -4Iv -m 5 --http3 https://google.com
+*
+Trying 64.233.162.100:443...
+* CAfile: /etc/ssl/certs/ca-certificates.crt
+* CApath: none
+* Connect socket 5 over QUIC to 64.233.162.100:443
+* Sent QUIC client Initial, ALPN: h3,h3-29,h3-28,h3-27
+* subjectAltName: host "google.com" matched cert's "google.com"
+* Verified certificate just fine
+* Connected to google.com () port 443 (#0)
+* h2h3 [:method: HEAD]
+* h2h3 [:path: /]
+* h2h3 [:scheme: https]
+* h2h3 [:authority: google.com]
+* h2h3 [user-agent: curl/7.83.0-DEV]
+* h2h3 [accept: */*]
+* Using HTTP/3 Stream ID: 0 (easy handle 0x55ae3ae897d0)
+> HEAD / HTTP/3
+> Host: google.com
+> user-agent: curl/7.83.0-DEV
+> accept: */*
+>
+< HTTP/3 301
+HTTP/3 301
+
+bolvan 26 15 April 2022 12:16
+
+Они писали на форуме, что на разных тарифах разные фильтры стоят. На lite “более сильный DPI”
+А может быть от адреса подключения зависит
+У меня тариф “Земля”. Все нормально и по v4, и по v6
+
+ValdikSS 27 18 April 2022 14:09
+
+Разработчики СКАТ DPI (VAS Experts) выпустили статью о работе с QUIC в своём блоге.
+
+Переход от TCP к QUIC и работа с сигнатурами — блог VAS
+Experts
+В процессе стандартизации IEFT QUIC разделился на транспортный и
+HTTP протоколы. С помощью транспортного передаются HTTP данные и другие
+
+0ka 28 19 April 2022 09:38
+
+На мобильном мегафоне возможно тоже такое есть: пришлось сменить симку в модеме на сим с
+другим тарифом, и прошлые настройки zapret перестали работать
+
+tango 29 2 May 2022 16:52
+
+Kathrin Elmenhorst, an author of “Web Censorship Measurements of HTTP/3 over QUIC”, has a
+repository with further tests of QUIC blocking, derived from OONI measurements. One thread of
+investigation is about Russia, and it has some interesting observations.
+
+Broad blocking of HTTP/3 traffic in Russia (AS31213, AS12389)
+opened 12:00PM - 29 Mar 22 UTC
+
+kelmenhorst
+
+Reports suggest that Russia started to block HTTP/3 traffic nationwide on the
+4t …
+
+In particular, on Yota (AS 31213), there appears to be a two-layer filter. One layer blocks all QUIC version
+1, except to specific servers; and a second layer blocks QUIC version 1 with with specific SNI values, no
+matter the server. This is interesting because the second layer means they are decrypting the initial packet
+protection on the packet containing the Client Hello.
+The evidence for this comes from observing what happens when accessing different servers using different
+SNI values.
+condition
+
+result
+
+Access foreign server with correct SNI
+
+blocked
+
+Access foreign server with vk.com SNI
+
+blocked
+
+Access vk.com server with vk.com SNI
+
+works
+
+Access vk.com server with www.facebook.com SNI blocked
+
+anonymous28 30 20 May 2022 08:26
+
+bolvan:
+На моем провайдере с ТСПУ начались непонятные и хаотичные отрубы QUIC сессий
+Всё ещё наблюдается?
+Сколько пакетов пропускает до блокировки (на картинке сквозная нумерация, число неочевидно)?
+Сохранились дампы?
+
+bolvan 31 20 May 2022 09:10
+
+anonymous28:
+Всё ещё наблюдается?
+Наблюдается. Там хаотичное поведение. 1-2 сессии могут пройти, 3 - застрять
+сколько пакетов я не считал
+2 провайдера с ТСПУ дают одинаковое поведение
+
+anonymous28 32 21 May 2022 07:11
+
+Система может расшифровать QUIC_V1 и декодировать SNI.
+Если ограничиться тестовым набором или соблюдать тестовые размеры, тогда всё работает: SNI
+декодируется и принимается решение.
+Система не может или не хочет достать SNI из пакета, который генерирует Firefox. Возможно дело в
+размерах (например для структур далее по стеку). Недоступный SNI триггерит блокировку.
+
+ValdikSS 33 21 May 2022 09:07
+
+Приведите пример пакетов, которые фильтруются и не фильтруются. Выложите pcap’ы или
+содержимое пакетов.
+
+anonymous28 34 21 May 2022 09:51
+
+blocked_firefox.bin (1.3 KB)
+works_quictls.bin (1.2 KB)
+
+bolvan 36 21 May 2022 16:22
+
+anonymous28:
+Система может расшифровать QUIC_V1 и декодировать SNI.
+Еще раз проверил на своем провайдере с ТСПУ
+Ничего не поменялось. Нет никаких признаков в пользу предположения о декодировании SNI
+Действительно, blocked_firefox.bin не проходит, а works_quictls.bin проходит
+Оба они от example.com. Подозреваю, там стоит фильтр по некоторым полям или длинам без
+декодирования, который почему-то не срабатывает в одном случае
+Пробовал curl с quiche на свой vps с разными SNI, в том числе vk.com. Ничего не проходит
+На белосписочные IP от vk проходит все
+
+./curl -4 --connect-to ::vk.com:443 --http3 https://example.com
+curl: (55) SSL: no alternative certificate subject name matches target host name
+
+При пробивании нулевым фейком или пакетом works_quictls.bin идентичное поведение. Хаотичный
+вис при загрузке сайтов
+
+anonymous28 37 21 May 2022 16:46
+
+bolvan:
+Нет никаких признаков в пользу предположения о декодировании SNI
+facebook_quictls.bin (1.2 KB)
+Этот проходит?
+
+ValdikSS 38 21 May 2022 17:25
+
+bolvan:
+Подозреваю, там стоит фильтр по некоторым полям или длинам без декодирования, который
+почему-то не срабатывает в одном случае
+Есть, как минимум, проверка целостности: если изменить хоть один байт в works, то пакет не
+доходит.
+Планирую провести детальные исследования, но если кто-то готов перехватить эстафету, буду только
+рад.
+
+bolvan 39 21 May 2022 18:52
+
+anonymous28:
+facebook_quictls.bin (1.2 KB)
+
+Этот проходит?
+Нет
+ValdikSS:
+Есть, как минимум, проверка целостности: если изменить хоть один байт в works, то пакет не
+доходит.
+Значит, все же расшифровывают. В QUIC initial нет никаких контрольных сумм, там используется
+GCM для аутентификации. Это AEAD шифр. Authenticated Encryption with Associated Data.
+Шифрование и аутентификация завязаны в том числе и на нешифрованный хедер, чтобы любое
+изменение порождало неверный atag. И только полная дешифровка с проверкой atag позволяет
+отсечь коррупцию в любом байте пакета.
+Однако, в остальных предложенных вариантах с этим тоже все в порядке.
+Значит они или ориентируются на расшифрованный блок (почему не секут тогда SNI ?), или
+расшифровывают исключительно для проверки целки, а блочат по другим признакам типа длины
+Или может быть в некоторых случаях они могут просечь SNI и блочат по нему, а в других случаях не
+могут (несовершенство парсера дешифрованного блока ?) и блочат, если IP не в white list
+nfqws может распарсить все предложенные бинарики
+
+anonymous28 40 22 May 2022 05:37
+
+bolvan:
+Хаотичный вис при загрузке сайтов
+Воспроизводится для гугла при запросе из curl+quictls, не воспроизводится для запросов из Firefox.
+(Внешнее различие в размерах пакетов, у Firefox они больше, а гугл-сервер в выборе размера пакетов
+ориентируется, в том числе, на размер QUIC initial клиента.)
+До принятия решения о блокировке проходит в среднем 15 входящих пакетов. (Возможно
+применяется скользящее окно, поэтому не следует ориентироваться на число пакетов с начала
+сеанса). Выглядит как статистический анализ? Ложно триггерит правило блокировки psiphon или
+иного протокола (не связанного с QUIC)?
+Не понятно столь широкое применение правила, возможно есть ограничение на адреса/порты/
+паттерны_inside.
+bolvan:
+
+блочат по другим признакам
+This.
+Возможно SNI успешно извлекается везде, а за блокировку по неизвестным паттернам из
+расшифрованного QUIC initial отвечает другое правило.
+Можно сравнить пакеты от Firefox, quictls и quiche.
+В коллекцию следует добавить legal_sni_quiche.bin
+
+bolvan 41 22 May 2022 05:53
+
+anonymous28:
+До принятия решения о блокировке проходит в среднем 15 входящих пакетов. (Возможно
+применяется скользящее окно, поэтому не следует ориентироваться на число пакетов с начала
+сеанса)
+Возможно используется отложенный процессинг. Расшифровка - задача потенциально тяжелая
+Видим initial, временно разрешаем, отдаем в отдельный поток, когда поток возвращает результат принимаем решение.
+Отдельный поток может ориентироваться на текущую загрузку DPI и отказываться от тяжелых
+операций при необходимости
+
+anonymous28 42 22 May 2022 08:20
+
+Заполнение нулями (наружное) QUIC initial триггерит блокировку. В Firefox такое применяется. В
+quictls внутренний с финальными 1200 байтами. В quiche – у меня нет данных (не собирается
+ржавчина).
+
+anonymous28 44 22 May 2022 18:07
+
+Хаотичные зависания могут быть вызваны большими (1400+) QUIC пакетами в середине сеанса,
+которые триггерят блокировку. В моем случае это был механизм pmtud на QUIC клиенте, после
+
+отключения зависаний нет. К проблемам с mtu это не имеет отношения, блокировка по тестируемым
+парам адреса:порты наблюдается на хопе с ТСПУ.
+У Firefox нет механизма pmtud, но он может быть на сервере.
+UPD:
+Большой размер пакета похоже так не важен, дело в другом.
+Есть скрипт, который возможно воспроизводит блокировку.
+Активация блокировки:
+Запрос, ответ, запрос.
+Нет ответа – нет блокировки.
+Размер запросов и ответа учитывается, но точно неизвестно.
+
+anonymous29 45 24 May 2022 08:24
+
+UPD: Код бредовый. Удалил. Вызывает блокировку потому что нарушает RFC.
+
+anonymous30 46 25 May 2022 18:17
+
+anonymous28:
+Заполнение нулями (наружное) QUIC initial триггерит блокировку.
+Если удалить заполняющие нули из пакета от Firefox – блокировки нет, и есть реакция на SNI.
+Это новое поведение или так было?
+
+ValdikSS 47 26 May 2022 06:53
+
+Ограничение HTTP/3 (QUIC)
+Фильтр работает только для пакетов с UDP-нагрузкой больше 1001 байтов (включительно).
+Фильтр ищет “00 00 00 01” (hex, QUIC version) в UDP-нагрузке, начиная со второго байта.
+Применяется только к UDP-пакетам на порт назначения 443. Исходящий порт значения не имеет
+
+(может быть также 443, фильтр не применится). Псевдо-yara-правило фильтра: rule
+QUIC_block_Russia_TSPU_04_mar_2022 { condition: filesize > 1000 and dport == 443 and
+int32be(1) == 0x00000001 } Минимальный пакет, на котор…
+
+ValdikSS:
+Фильтр работает только для пакетов с UDP-нагрузкой больше 1001 байтов (включительно).
+
+anonymous30 48 26 May 2022 07:19
+
+Под это правило могли попадать разные сценарии:
+1. Пробует расшифровать только если размер больше X, неудача=блокировка.
+2. Пробует расшифровать всегда, неудача=блокировка если размер больше X.
+
+serfreeman1337 51 29 May 2022 19:31
+
+Действительно, зависаний сессии больше нет.
+Сессия не зависает, если первым отправлять пакет с длиной 601 байт и “1” во 2-ом бите.
+quicfix.bin (601 Bytes)
+
+bolvan 52 29 May 2022 20:19
+
+У меня работает такой обход
+первым фейком, состоящим из нулей, пробиваем начальную проверку
+далее при первом встреченном пакете с длиной >=600 и short header шлем произвольный фейк пакет
+тоже с short header , но другим connection id. далее можно ничего не слать, сессия похоже
+окончательно уходит в разрешенные
+для такой хитрости сделал custom скрипт для zapret custom-nfqws-quic4all-tspu
+Вариант без скриптов :
+
+/opt/zapret/nfq/nfqws --qnum 210 --dpi-desync=fake --debug
+/opt/zapret/nfq/nfqws --qnum 211 --dpi-desync=fake --dpi-desync-any-protocol --deb
+iptables -t mangle -I POSTROUTING -p udp --dport 443 -m connbytes --connbytes-dir=
+iptables -t mangle -I POSTROUTING -p udp --dport 443 -m length --length 600:1500
+
+Спасибо anonymous32 за идею
+
+anonymous32 54 30 May 2022 05:50
+
+bolvan:
+с длиной >=600
+На == 600 ТСПУ не переключает фазу проверки и ждет дальше.
+
+bolvan 55 30 May 2022 06:37
+
+Сперва у меня не получилось пробить висы лишь первым фейком.
+Но я ошибся, использовал не тот параметр nfqws.
+Все нормально. Достаточно вместо нулей послать первым фейком достаточно длинный пакет с short
+header. Нет нужды в дополнительных сложностях
+Как-то так
+nfqws --qnum=210 --user=daemon --dpi-desync-fwmark=0x40000000 --dpi-desync=fake iptables -t mangle -I POSTROUTING -p udp --dport 443 -m connbytes --connbytes-dir=
+
+В последней версии nfqws сделал по умолчанию quic fake , состоящий из 620 байт со всеми нулями,
+кроме первого байта - 0x40. Так что файл с содержимым пакета не нужен
+
+tango 56 7 June 2022 19:02
+
+anonymous28:
+
+Возможно SNI успешно извлекается везде, а за блокировку по неизвестным паттернам из
+расшифрованного QUIC initial отвечает другое правило.
+Kathrin Elmenshort has done some tests and on Yota, at least, there seems to be a 2-layer filter.
+https://github.com/net4people/bbs/issues/108#issuecomment-1115131376
+One layer blocks all QUIC version 1, except to specific servers; and a second layer blocks QUIC
+version 1 with with specific SNI values, no matter the server.
+The evidence for this comes from observing what happens when accessing different servers using
+different SNI values.
+condition
+
+result
+
+Access foreign server with correct SNI
+
+blocked
+
+Access foreign server with vk.com SNI
+
+blocked
+
+Access vk.com server with vk.com SNI
+
+works
+
+Access vk.com server with www.facebook.com
+SNI
+
+blocked
+
+DarkEmpire 57 7 June 2022 23:01
+
+и что как щас жить с этим, есть ли универсальное решение?
+а то в браузерах то я отключил QUIC и стало норм, но не везде выходит его отключить, например в
+приложении спотифая никак, либо на телефоне в приложениях гугла
+юзаю антизапрет на роутере через openvpn
+
+Supp 58 8 June 2022 17:44
+
+как это на nft в openwrt будет выглядеть?
+
+bolvan 59 8 June 2022 18:17
+
+см тему whats new в разделе zapret. если руками то есть docs/nftables.txt
+
+bolvan 61 21 June 2022 11:11
+
+Сегодня на домру Ростов обнаружилась такая ситуевина.
+google.com, youtube.com - quic нормально работает с curl и PC броузеров firefox, chromium (версия
+для Linux)
+facebook.com - после пробоя блокировки TLS все то же самое, кроме chromium. С ним первый же
+quic initial блокируется. При попытке пробоя nfqws через fake ответ от сервера приходит, идет новый
+пакет от клиента, и дальше вис.
+сам не проверял, но владелец подключения утверждает, что у него проблемы с quic с android/mac с
+броузера chrome на google.com. И для лечения он использовал nfqws, но неправильно, из-за чего он
+работал исключительно на блокировку QUIC. Без QUIC броузер довольно быстро выправлялся. А с
+ним, выходит, что застревал где-то посередине соединения. И на это жалуется не только он.
+ТСПУ там тоже наблюдается. Одна из моих тор нод заблокирована. Но блокировка QUIC отличается
+от обычной для, скажем, tiera spb или мегафон спб.
+Пробить facebook с PC хрома удалось через --dpi-desync=fake --dpi-desync-repeats=5.
+То ли лимит на количество анализируемых пакетов у DPI, то ли размер буфера ограничен, но если за
+первые 5 пакетов бросать туда не QUIC, он отстает
+
+ValdikSS 62 14 July 2022 10:18
+
+Похоже, блокировка QUIC связана с попыткой блокировки программы Psiphon — она использует
+QUIC с разными версиями протокола и разными фингерпринтами, как один из методов обхода
+фильтрации.
+Только вот Psiphon продолжает успешно подключаться через QUIC, хоть и не моментально, а
+браузеры — нет
+
+bolvan 63 26 July 2022 16:39
+
+На моем провайдере tiera появился дополнительный DPI от gblnet
+Обычный блокировщик и ТСПУ находятся на 5-м хопе.
+gblnet-овский на 11м.
+- checking nfqws --dpi-desync=fake,split --dpi-desync-ttl=3
+[attempt 1] suspicious redirection 307 to : https://tiera.ru/blocked.php
+[attempt 2] suspicious redirection 307 to : https://tiera.ru/blocked.php
+[attempt 3] suspicious redirection 307 to : https://tiera.ru/blocked.php
+UNAVAILABLE
+- checking nfqws --dpi-desync=fake,split --dpi-desync-ttl=4
+[attempt 1] suspicious redirection 307 to : https://tiera.ru/blocked.php
+[attempt 2] suspicious redirection 307 to : https://tiera.ru/blocked.php
+[attempt 3] suspicious redirection 307 to : https://tiera.ru/blocked.php
+UNAVAILABLE
+- checking nfqws --dpi-desync=fake,split --dpi-desync-ttl=5
+[attempt 1] suspicious redirection 302 to : https://gblnet.net/blocked.php
+[attempt 2] suspicious redirection 302 to : https://gblnet.net/blocked.php
+[attempt 3] suspicious redirection 302 to : https://gblnet.net/blocked.php
+UNAVAILABLE
+- checking nfqws --dpi-desync=fake,split --dpi-desync-ttl=6
+[attempt 1] suspicious redirection 302 to : https://gblnet.net/blocked.php
+[attempt 2] suspicious redirection 302 to : https://gblnet.net/blocked.php
+[attempt 3] suspicious redirection 302 to : https://gblnet.net/blocked.php
+UNAVAILABLE
+..........
+- checking nfqws --dpi-desync=fake,split --dpi-desync-ttl=11
+[attempt 1] AVAILABLE
+[attempt 2] AVAILABLE
+[attempt 3] AVAILABLE
+!!!!! AVAILABLE !!!!!
+
+Что примечательно касаемо QUIC.
+Похоже, что gblnet полностью блокирует QUIC initial пакеты на udp port 443 в stateless режиме вне
+зависимости от IP назначения.
+Если я отсылаю сначала фейк с short header, потом initial, установив пакету ttl=8, например, то
+приходит TTL expired in transit. Начиная с 11 хопа не приходит ничего. То есть 5-й хоп пробивается с
+обычным DPI, но глобал блочит все.
+Проверял на свою VPSку. initial не доходят вообще. если мешать с одним src_port, то short доходят
+все, initial не доходят
+
+anonymous56 64 26 July 2022 17:18
+
+bolvan:
+gblnet-овский на 11м
+Как-то далеко. Есть признаки что это сеть провайдера, а не магистраль?
+Может уровень супербосса блокировок достигли.
+UPD:
+По ссылке на сайте c блокировкой от gblnet картинка и телефон ООО “ЕТЕЛЕКОМ”, который входит
+вместе с ООО “ГЛОБАЛНЕТ” в холдинг ООО “ЕТ-ГРУПП”. При этом гендир у холдинга и ООО
+“ТИЕРА ЦЕНТР” один, но тиера не входит в холдинг.
+Спецы вышли из чата, остались 1 гендир и 2 блокировщика.
+
+bolvan 65 26 July 2022 17:57
+
+anonymous56:
+Как-то далеко. Есть признаки что это сеть провайдера, а не магистраль?
+11-й хоп 109.239.134.66
+route: 109.239.134.0/24
+descr: Butlerova7 P2P Customer Network
+origin: AS31500
+mnt-by: MNT-GLOBAL-NET
+и редирект по http идет на сайт магистрала
+получается магистралов подтянули к блокировкам
+
+bolvan 66 27 July 2022 06:57
+
+Еще немного подробностей
+Что считается QUIC initial.
+1. udp_length >=1200
+2. Старший бит первого байта установлен (long header)
+
+3. Байты 1…4 uint32 в network byte order - это версия QUIC. Сечется IETF QUIC и некоторые чуть
+более старые версии драфта
+Например, такой пакет : 80 00 00 00 01 00 00 … 00 (1200 байт)
+уже не проходит
+У firefox в initial используются лишь несколько сотен байт в начале, остальное - паддинг нолями.
+Если бы уменьшить размер UDP на передающей стороне , то оно бы прошло
+chromium имеет склонность фрагментировать и раздувать до большого размера нешифрованный
+блок за счет паддинга и пинга, что приводит к увеличению длины используемого шифрованного
+блока
+
+anonymous56 67 27 July 2022 07:33
+
+“Классику” тоже дропают?
+quic_vk.bin (1.2 KB)
+
+bolvan 68 27 July 2022 07:35
+
+anonymous56:
+“Классику” тоже дропают?
+дропают
+похоже, наши власти обьявили QUIC полную негласную войну
+анализ QUIC сопряжен с алгоритмической и нагрузочной сложностью. проще рубануть.
+любой внутрироссийский сервис будет вынужден отказываться от деплоймента QUIC
+на мегафоне спб смотрел. Опять появились подвисания, непонятно по какому алгоритму. Пробивка
+short header первым пакетом уже не надежна. Где-то норм, но ютубе скатывается на http2 после
+небольших тормозов. Полной стателесс блокировки нет
+внедрение блокиратора на магистрале - предполагаю это вынужденная антисанкционная мера в
+условиях острой нехватки оборудования. не все провайдеры еще с ТСПУ, а где есть, часто бывает
+лоад балансинг, где не все пути оборудованы этим ДПИ. Пробный шар как прокатит, тестирование
+на высокой нагрузке, включение щадящих CPU режимов фильтрации (stateless)
+http, кстати, тоже фильтруется stateless. Надо сечь все пакеты внутри keep alive. Обычный режим
+rdp.ru предполагает фильтрацию stateful
+
+anonymous57 69 28 July 2022 19:03
+
+Локалхост в надежных руках.
+Меж тем изменения ПО/правил с июня-июля:
+Дефрагментирует фреймы.
+Неудачную расшифровку (в т.ч. проверку размеров) и SNI-less игнорирует.
+
+anonymous109 70 8 March 2023 16:54
+
+По интересному совпадению, rdp научился понимать фрагменты CH сразу после выпуска nDPI с
+фиксом.
+У них в планах, нарушить работу всех ваших игрушек, десинхронизирующих nDPI.
+
+bolvan 71 9 March 2023 19:14
+
+anonymous109:
+У них в планах, нарушить работу всех ваших игрушек, десинхронизирующих nDPI.
+Насколько я понял, цель фрагментации CH в chrome - вовсе не обман DPI, а принуждение веб
+серверов к отказу от предположения, что CH пойдет один блоком. Чтобы они вынуждены были
+учитывать такой сценарий, а не упрощать себе жизнь, тем самым не полностью поддерживая
+стандарт.
+Собрать разбросанные фрагменты не настолько алгоритмически сложно и CPU затратно, сколько
+расшифровать сам пакет. Удивительно, что этого не было сделано сразу.
+
+bolvan 74 8 July 2023 10:13
+
+Текущая ситуация по QUIC примерно такая.
+Опробовано порядка 12 провайдеров в RU из разных городов.
+На большинстве из них QUIC блокируется путем анализа SNI из расшифрованного QUIC initial.
+
+Если SNI плохой, то блокируется stateful все udp “соединение”.
+Анализируется только udp port 443.
+Поскольку поведение у всех примерно одинаковое, то можно сказать, что блокирует ТСПУ.
+Но тут есть важная оговорка. Модуль парсера кривой.
+
+GitHub - bol-van/bins: precompiled static binaries for android
+precompiled static binaries for android
+тут есть статический curl для x86_64 и arm с поддержкой nghttp3 (curl) и quiche (curlq)
+Если попробовать этими 2 курлами подергать инстаграм, то видно, что curl виснет, а curlq
+прокатывает.
+Так же firefox после пробивки TCP (чтобы он начал переходить на QUIC) спокойно берет http3, а
+chrome - только http2.
+Можно проверить, загнав через ncat на свой VPS : блобы из zapret:files/fake.
+quic_initial_facebook_com.bin не доходит, а quic_initial_facebook_com_quiche.bin доходит.
+То есть вывод, что парсер сечет chrome и nghttp3, но не сечет quiche и firefox.
+Без обхода блокировок по TCP броузеры все равно не пойдут на QUIC, так что разницы
+практической мало.
+Разблокируется через nfqws --fake.
+Есть и исключение у провайдеров. Tiera, как обычно. Аплинк глобалнет продолжает полностью
+блокировать QUIC. Больше нет никаких подвисаний сессии. Тупо режут long header в обе стороны.
+
+Обсуждение: Замедление YouTube в России
+
+l8l 75 10 November 2024 13:03
+
+Есть ли новости какие? Просто он такой быстрый, вон авито по http3 картинки подгружает,
+translate.google.ru тоже отсвечивает соединениями с QUIC…
+
+Saiv46 76 31 January 2026 11:02
+
+ЭР-Телеком, Иркутская область.
+Я удивился когда cloudflare-quic.com и quic.nginx.org начали работать при отключении
+DPI-дурилки, а также не мог понять почему во всех сборках запрета используется только --dpidesync-fake-quic . Я так понимаю, что любое UDP “соединение” блокируется по-умолчанию если
+нету QUIC Initial с незапрещённым SNI. Возможно цель была в том чтобы заблокировать
+Wireguard/Shadowsocks с мусором в начале, что конечно сломало остальные малоизвестные
+протоколы (в частности игры).
+
+Xunlei 77 31 January 2026 11:44
+
+У меня блокируется любой (well-known не проверял) в сторону определённых, фейк по sni работает
+только на 443 порт TLS/QUIC (80 не проверял пока) из списка для этих подсетей. Для Contabo и
+Creanova похоже что и нет белого sni, пробится пока не выходит.
+
+
