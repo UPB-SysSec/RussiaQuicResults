@@ -21,7 +21,7 @@ We anonymized the recorded pcaps using the following IP address mapping:
 | MOW   | Moscow           | 10.0.0.1     |
 | SPE   | Saint Petersburg | 10.0.0.2     |
 | NVS   | Novosibirsk      | 10.0.0.3     |
-|       | Uncensored       | 10.0.255.255 |
+|       | Berlin, Germany  | 10.0.255.255 |
 
 
 ## Archived Forum Posts
