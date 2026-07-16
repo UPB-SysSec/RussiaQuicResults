@@ -1,6 +1,6 @@
 # On Russia’s Early Introduction of QUIC SNI Censorship
 
-This repository contains pcaps, results, and archived references for the FOCI submission "On Russia’s Early Introduction of QUIC SNI Censorship".
+This repository contains pcaps, results, and archived references for the paper "On Russia’s Early Introduction of QUIC SNI Censorship", which appeared [at FOCI'26](https://www.petsymposium.org/foci/2026/foci-2026-0010.php).
 
 - `archived-posts`:
   Archived forum posts referenced in the paper.
